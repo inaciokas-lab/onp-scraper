@@ -126,7 +126,7 @@ def parse_number(text: Optional[str]) -> Optional[float]:
 
 
 def parse_table(html: str, delegation_name: str, page_num: int) -> list:
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     records = []
 
     table = None
@@ -194,7 +194,7 @@ def parse_table(html: str, delegation_name: str, page_num: int) -> list:
 
 
 def detect_total_pages(html: str) -> int:
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     max_page = 1
     for link in soup.find_all("a", href=True):
         href = link["href"]
