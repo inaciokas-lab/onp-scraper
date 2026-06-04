@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🐟 ONP Fish Market Dashboard
+ONP Fish Market Dashboard
 Office National des Pêches — Morocco
 
 Hybrid scraper:
@@ -40,7 +40,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 BASE_URL = "https://www.onp.ma/prix/"
 
 DELEGATIONS = {
-    "-- Choisir un port --": -1,
+    "-- Select a port --": -1,
     "Agadir": 1,
     "Al Hoceima": 2,
     "Casablanca": 3,
@@ -91,7 +91,7 @@ USER_AGENT = (
 
 def normalize_text(text: Optional[str]) -> str:
     if not text:
-        return "Inconnu"
+        return "Unknown"
 
     text = re.sub(r"\s+", " ", str(text).strip())
     return text.title()
@@ -197,11 +197,11 @@ def build_dataframe(records: list) -> pd.DataFrame:
     df = pd.DataFrame(records)
 
     expected_cols = [
-        "Espèce",
-        "Date de vente",
-        "Poids (KG)",
-        "Montant (DH)",
-        "Prix (DH/KG)",
+        "Species",
+        "Sale date",
+        "Weight (KG)",
+        "Amount (DH)",
+        "Price (DH/KG)",
         "Port",
     ]
 
@@ -223,7 +223,8 @@ def build_dataframe(records: list) -> pd.DataFrame:
 
 def parse_table(html: str, delegation_name: str, page_num: int = 1) -> list:
     """
-    Parses HTML tables and maps them to the dashboard schema.
+    Parses only tables that look like real fish-market data.
+    Rejects administrative/procurement tables such as DAO, tenders, notices, etc.
     """
     soup = BeautifulSoup(html, "html.parser")
     records = []
@@ -235,35 +236,55 @@ def parse_table(html: str, delegation_name: str, page_num: int = 1) -> list:
 
     candidate_tables = []
 
+    admin_keywords = [
+        "dao",
+        "avis de modification",
+        "appel d'offres",
+        "appel d’offres",
+        "consultation",
+        "marché public",
+        "marche public",
+        "règlement",
+        "reglement",
+        "référence",
+        "reference",
+    ]
+
+    market_keywords = [
+        "espèce",
+        "espece",
+        "poisson",
+        "produit",
+        "designation",
+        "prix",
+        "poids",
+        "quantité",
+        "quantite",
+        "montant",
+        "date",
+        "vente",
+        "kg",
+        "dh/kg",
+        "dh / kg",
+    ]
+
     for table in tables:
         table_text = table.get_text(" ", strip=True).lower()
 
+        if any(keyword in table_text for keyword in admin_keywords):
+            continue
+
         score = 0
 
-        for keyword in [
-            "espèce",
-            "espece",
-            "poisson",
-            "produit",
-            "designation",
-            "prix",
-            "poids",
-            "quantité",
-            "quantite",
-            "montant",
-            "date",
-            "vente",
-            "kg",
-            "dh",
-            "mad",
-        ]:
+        for keyword in market_keywords:
             if keyword in table_text:
                 score += 5
 
         rows_count = len(table.find_all("tr"))
         score += rows_count
 
-        candidate_tables.append((score, table))
+        if score >= 8:
+            candidate_tables.append((score, table))
 
     candidate_tables.sort(key=lambda x: x[0], reverse=True)
 
@@ -283,6 +304,23 @@ def parse_single_table(table, delegation_name: str) -> list:
     if len(rows) < 2:
         return records
 
+    full_table_text = table.get_text(" ", strip=True).lower()
+
+    bad_table_keywords = [
+        "dao",
+        "avis de modification",
+        "appel d'offres",
+        "appel d’offres",
+        "consultation",
+        "marché public",
+        "marche public",
+        "règlement",
+        "reglement",
+    ]
+
+    if any(keyword in full_table_text for keyword in bad_table_keywords):
+        return records
+
     header_row = rows[0]
     headers = [
         h.get_text(" ", strip=True).lower()
@@ -298,35 +336,53 @@ def parse_single_table(table, delegation_name: str) -> list:
         clean_h = clean_header(h)
 
         if any(x in clean_h for x in ["espece", "poisson", "produit", "designation", "libelle"]):
-            col_map["espece"] = idx
+            col_map["species"] = idx
 
         elif "date" in clean_h:
-            col_map["date_vente"] = idx
+            col_map["sale_date"] = idx
 
         elif any(x in clean_h for x in ["poids", "quantite", "volume", "kg"]):
-            col_map["poids_kg"] = idx
+            col_map["weight_kg"] = idx
 
         elif any(x in clean_h for x in ["prix", "moyen", "dh/kg", "dh / kg"]):
-            col_map["prix_dh_kg"] = idx
+            col_map["price_dh_kg"] = idx
 
         elif any(x in clean_h for x in ["montant", "valeur", "total", "dh", "mad"]):
-            col_map["montant_dh"] = idx
+            col_map["amount_dh"] = idx
 
     max_cols = max(len(r.find_all(["td", "th"])) for r in rows)
 
-    # Fallback if headers are unclear.
-    if "espece" not in col_map and max_cols >= 4:
+    market_signal_words = [
+        "espèce",
+        "espece",
+        "poisson",
+        "prix",
+        "poids",
+        "quantité",
+        "quantite",
+        "kg",
+        "dh/kg",
+    ]
+
+    market_signal_count = sum(
+        1 for word in market_signal_words if word in full_table_text
+    )
+
+    if "species" not in col_map and max_cols >= 4 and market_signal_count >= 2:
         col_map = {
-            "espece": 0,
-            "poids_kg": 1,
-            "montant_dh": 2,
-            "prix_dh_kg": 3,
+            "species": 0,
+            "weight_kg": 1,
+            "amount_dh": 2,
+            "price_dh_kg": 3,
         }
 
         if max_cols >= 5:
-            col_map["date_vente"] = 4
+            col_map["sale_date"] = 4
 
-    if "espece" not in col_map:
+    if "species" not in col_map:
+        return records
+
+    if "weight_kg" not in col_map and "price_dh_kg" not in col_map and "amount_dh" not in col_map:
         return records
 
     data_rows = rows[1:]
@@ -348,15 +404,15 @@ def parse_single_table(table, delegation_name: str) -> list:
 
             return None
 
-        espece = get_text("espece")
+        species = get_text("species")
 
-        if not espece:
+        if not species:
             continue
 
-        espece_lower = espece.lower()
+        species_lower = species.lower().strip()
 
         if any(
-            kw in espece_lower
+            kw in species_lower
             for kw in [
                 "espèce",
                 "espece",
@@ -368,17 +424,36 @@ def parse_single_table(table, delegation_name: str) -> list:
                 "date",
                 "quantité",
                 "quantite",
+                "dao",
+                "avis",
+                "modification",
+                "appel d'offres",
+                "appel d’offres",
+                "consultation",
             ]
         ):
             continue
 
+        if re.search(r"\b(dao|ca|ao|avis|n°|nº|no|num|numero)\b", species_lower):
+            continue
+
+        weight = parse_number(get_text("weight_kg"))
+        amount = parse_number(get_text("amount_dh"))
+        price = parse_number(get_text("price_dh_kg"))
+
+        if price is not None and price > 5000:
+            continue
+
+        if weight is None and amount is None and price is None:
+            continue
+
         records.append(
             {
-                "Espèce": normalize_text(espece),
-                "Date de vente": parse_date_value(get_text("date_vente")),
-                "Poids (KG)": parse_number(get_text("poids_kg")),
-                "Montant (DH)": parse_number(get_text("montant_dh")),
-                "Prix (DH/KG)": parse_number(get_text("prix_dh_kg")),
+                "Species": normalize_text(species),
+                "Sale date": parse_date_value(get_text("sale_date")),
+                "Weight (KG)": weight,
+                "Amount (DH)": amount,
+                "Price (DH/KG)": price,
                 "Port": delegation_name,
             }
         )
@@ -409,7 +484,7 @@ def detect_total_pages(html: str) -> int:
 # METHOD 1 — STATIC HTML
 # ──────────────────────────────────────────────
 
-def fetch_static_html(url: str, timeout: int = 30) -> str:
+def fetch_static_html(url: str, timeout: int = 8) -> str:
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -418,41 +493,23 @@ def fetch_static_html(url: str, timeout: int = 30) -> str:
         "Referer": BASE_URL,
     }
 
-    for attempt in range(3):
-        try:
-            response = requests.get(url, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding or "utf-8"
-            return response.text
-        except Exception:
-            if attempt == 2:
-                raise
-            time.sleep(1.5 * (attempt + 1))
-
-    return ""
+    response = requests.get(url, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or "utf-8"
+    return response.text
 
 
 def get_static_candidate_urls(port_id: int, page: int = 1) -> list:
-    base_candidates = [
-        f"{BASE_URL}?search-delegation={port_id}",
-        f"{BASE_URL}?delegation={port_id}",
-        f"{BASE_URL}?port={port_id}",
-        f"{BASE_URL}?id_delegation={port_id}",
-        f"{BASE_URL}?search_delegation={port_id}",
-        f"{BASE_URL}?region={port_id}",
+    if page == 1:
+        return [
+            f"{BASE_URL}?search-delegation={port_id}",
+            f"{BASE_URL}?delegation={port_id}",
+        ]
+
+    return [
+        f"{BASE_URL}?search-delegation={port_id}&page={page}",
+        f"{BASE_URL}?delegation={port_id}&page={page}",
     ]
-
-    if page > 1:
-        paged_candidates = []
-
-        for url in base_candidates:
-            separator = "&" if "?" in url else "?"
-            paged_candidates.append(f"{url}{separator}page={page}")
-            paged_candidates.append(f"{url}{separator}paged={page}")
-
-        return paged_candidates
-
-    return base_candidates
 
 
 def discover_related_urls(html: str, current_url: str) -> list:
@@ -508,17 +565,13 @@ def scrape_port_static(port_name, port_id, max_pages, progress_bar, status_text)
     all_records = []
     checked_urls = set()
 
-    total_pages = max_pages if max_pages > 0 else 1
+    total_pages = min(max_pages if max_pages > 0 else 1, 2)
 
     for page in range(1, total_pages + 1):
-        status_text.text(f"1️⃣ Static HTML — {port_name}, page {page}")
+        status_text.text(f"1. Static HTML — {port_name}, page {page}")
 
         page_records = []
-
         candidate_urls = get_static_candidate_urls(port_id, page)
-
-        if page == 1:
-            candidate_urls.insert(0, BASE_URL)
 
         for url in candidate_urls:
             if url in checked_urls:
@@ -527,7 +580,7 @@ def scrape_port_static(port_name, port_id, max_pages, progress_bar, status_text)
             checked_urls.add(url)
 
             try:
-                html = fetch_static_html(url)
+                html = fetch_static_html(url, timeout=8)
             except Exception:
                 continue
 
@@ -536,37 +589,17 @@ def scrape_port_static(port_name, port_id, max_pages, progress_bar, status_text)
             if records:
                 page_records.extend(records)
 
-            related_urls = discover_related_urls(html, url)
-
-            for related_url in related_urls:
-                if related_url in checked_urls:
-                    continue
-
-                checked_urls.add(related_url)
-
-                try:
-                    related_html = fetch_static_html(related_url)
-                    related_records = parse_table(related_html, port_name, page)
-
-                    if related_records:
-                        page_records.extend(related_records)
-
-                except Exception:
-                    continue
-
         if page_records:
             all_records.extend(page_records)
             status_text.text(
-                f"✅ Static HTML — {port_name}, page {page}: {len(page_records)} records"
+                f"Static HTML found {len(page_records)} records for {port_name}, page {page}"
             )
         else:
-            status_text.text(f"⚠️ Static HTML — {port_name}, page {page}: no data")
-
-            if page == 1:
-                break
+            status_text.text(f"Static HTML found no data for {port_name}, page {page}")
+            break
 
         progress_bar.progress(page / max(total_pages, 1))
-        time.sleep(0.5)
+        time.sleep(0.2)
 
     return build_dataframe(all_records)
 
@@ -588,7 +621,7 @@ def find_json_like_urls(html: str, base_url: str) -> list:
     patterns = [
         r"""["']([^"']*(?:api|ajax|json|mercuriale|prix|poisson|vente|delegation|march)[^"']*)["']""",
         r"""url\s*:\s*["']([^"']+)["']""",
-        r"""fetch\(["']([^"']+)["']\)""",
+        r"""fetch$["']([^"']+)["']$""",
         r"""\.get\(["']([^"']+)["']""",
         r"""\.post\(["']([^"']+)["']""",
     ]
@@ -651,7 +684,7 @@ def map_json_row_to_record(row: dict, port_name: str) -> Optional[dict]:
 
         return None
 
-    espece = pick(
+    species = pick(
         [
             "espece",
             "espèce",
@@ -666,7 +699,7 @@ def map_json_row_to_record(row: dict, port_name: str) -> Optional[dict]:
         ]
     )
 
-    poids = pick(
+    weight = pick(
         [
             "poids",
             "poids_kg",
@@ -678,7 +711,7 @@ def map_json_row_to_record(row: dict, port_name: str) -> Optional[dict]:
         ]
     )
 
-    montant = pick(
+    amount = pick(
         [
             "montant",
             "montant_dh",
@@ -690,7 +723,7 @@ def map_json_row_to_record(row: dict, port_name: str) -> Optional[dict]:
         ]
     )
 
-    prix = pick(
+    price = pick(
         [
             "prix",
             "prix_moyen",
@@ -701,7 +734,7 @@ def map_json_row_to_record(row: dict, port_name: str) -> Optional[dict]:
         ]
     )
 
-    date_vente = pick(
+    sale_date = pick(
         [
             "date",
             "date_vente",
@@ -711,15 +744,20 @@ def map_json_row_to_record(row: dict, port_name: str) -> Optional[dict]:
         ]
     )
 
-    if not espece:
+    if not species:
+        return None
+
+    parsed_price = parse_number(price) if price is not None else None
+
+    if parsed_price is not None and parsed_price > 5000:
         return None
 
     return {
-        "Espèce": normalize_text(espece),
-        "Date de vente": parse_date_value(date_vente) if date_vente else None,
-        "Poids (KG)": parse_number(poids) if poids is not None else None,
-        "Montant (DH)": parse_number(montant) if montant is not None else None,
-        "Prix (DH/KG)": parse_number(prix) if prix is not None else None,
+        "Species": normalize_text(species),
+        "Sale date": parse_date_value(sale_date) if sale_date else None,
+        "Weight (KG)": parse_number(weight) if weight is not None else None,
+        "Amount (DH)": parse_number(amount) if amount is not None else None,
+        "Price (DH/KG)": parsed_price,
         "Port": port_name,
     }
 
@@ -751,14 +789,14 @@ def try_fetch_json(url: str, port_id: int) -> Optional[object]:
                     request_url,
                     params=params,
                     headers=headers,
-                    timeout=30,
+                    timeout=20,
                 )
             else:
                 response = requests.post(
                     request_url,
                     data=params,
                     headers=headers,
-                    timeout=30,
+                    timeout=20,
                 )
 
             if response.status_code >= 400:
@@ -777,7 +815,7 @@ def try_fetch_json(url: str, port_id: int) -> Optional[object]:
 
 
 def scrape_port_api(port_name, port_id, max_pages, progress_bar, status_text) -> pd.DataFrame:
-    status_text.text(f"2️⃣ Hidden API discovery — {port_name}")
+    status_text.text(f"2. Hidden API discovery — {port_name}")
 
     try:
         base_html = fetch_static_html(BASE_URL)
@@ -787,7 +825,7 @@ def scrape_port_api(port_name, port_id, max_pages, progress_bar, status_text) ->
     api_urls = find_json_like_urls(base_html, BASE_URL)
     related_urls = discover_related_urls(base_html, BASE_URL)
 
-    for related_url in related_urls:
+    for related_url in related_urls[:10]:
         try:
             related_html = fetch_static_html(related_url)
             api_urls.extend(find_json_like_urls(related_html, related_url))
@@ -797,18 +835,18 @@ def scrape_port_api(port_name, port_id, max_pages, progress_bar, status_text) ->
     api_urls = list(dict.fromkeys(api_urls))
 
     if not api_urls:
-        status_text.text("⚠️ No API candidates discovered")
+        status_text.text("No API candidates discovered")
         return pd.DataFrame()
 
     all_records = []
 
-    for i, api_url in enumerate(api_urls):
-        status_text.text(f"2️⃣ Testing API candidate {i + 1}/{len(api_urls)}")
+    for i, api_url in enumerate(api_urls[:20]):
+        status_text.text(f"2. Testing API candidate {i + 1}/{min(len(api_urls), 20)}")
 
         data = try_fetch_json(api_url, port_id)
 
         if data is None:
-            progress_bar.progress((i + 1) / max(len(api_urls), 1))
+            progress_bar.progress((i + 1) / max(min(len(api_urls), 20), 1))
             continue
 
         rows = extract_dict_rows(data)
@@ -822,7 +860,7 @@ def scrape_port_api(port_name, port_id, max_pages, progress_bar, status_text) ->
         if all_records:
             break
 
-        progress_bar.progress((i + 1) / max(len(api_urls), 1))
+        progress_bar.progress((i + 1) / max(min(len(api_urls), 20), 1))
 
     return build_dataframe(all_records)
 
@@ -832,10 +870,6 @@ def scrape_port_api(port_name, port_id, max_pages, progress_bar, status_text) ->
 # ──────────────────────────────────────────────
 
 def make_driver():
-    """
-    Creates a Selenium Chrome/Chromium driver compatible with Streamlit Cloud
-    and other live Linux deployments.
-    """
     options = Options()
 
     options.add_argument("--headless")
@@ -876,8 +910,8 @@ def make_driver():
     if not chrome_binary:
         raise RuntimeError(
             "Chrome/Chromium binary not found. "
-            "If using Streamlit Cloud, add packages.txt at repo root with: "
-            "chromium and chromium-driver. Then clear cache and reboot the app."
+            "If using Streamlit Cloud, add packages.txt at the repository root with "
+            "chromium and chromium-driver, then clear cache and reboot the app."
         )
 
     options.binary_location = chrome_binary
@@ -1053,7 +1087,7 @@ def scrape_port_selenium(port_name, port_id, max_pages, progress_bar, status_tex
     try:
         driver = make_driver()
 
-        status_text.text(f"3️⃣ Selenium fallback — opening ONP — {port_name}")
+        status_text.text(f"3. Selenium fallback — opening ONP — {port_name}")
 
         first_html = fetch_rendered_port_page(driver, port_name, port_id, page=1)
 
@@ -1066,7 +1100,7 @@ def scrape_port_selenium(port_name, port_id, max_pages, progress_bar, status_tex
         all_records.extend(records)
 
         progress_bar.progress(1 / max(total_pages, 1))
-        status_text.text(f"3️⃣ Selenium — page 1/{total_pages} — {len(records)} records")
+        status_text.text(f"3. Selenium — page 1/{total_pages} — {len(records)} records")
 
         if not records:
             time.sleep(3)
@@ -1076,12 +1110,12 @@ def scrape_port_selenium(port_name, port_id, max_pages, progress_bar, status_tex
             if retry_records:
                 all_records.extend(retry_records)
                 status_text.text(
-                    f"3️⃣ Selenium — page 1/{total_pages} — "
+                    f"3. Selenium — page 1/{total_pages} — "
                     f"{len(retry_records)} records after retry"
                 )
             else:
                 status_text.text(
-                    f"⚠️ Selenium — {port_name}: no readable table in rendered HTML"
+                    f"Selenium — {port_name}: no readable market table in rendered HTML"
                 )
 
         for page in range(2, total_pages + 1):
@@ -1090,21 +1124,21 @@ def scrape_port_selenium(port_name, port_id, max_pages, progress_bar, status_tex
                 records = parse_table(html, port_name, page)
 
                 if not records:
-                    status_text.text(f"⚠️ Selenium — page {page}: no data")
+                    status_text.text(f"Selenium — page {page}: no data")
                     break
 
                 all_records.extend(records)
 
                 progress_bar.progress(page / max(total_pages, 1))
                 status_text.text(
-                    f"3️⃣ Selenium — page {page}/{total_pages} — "
+                    f"3. Selenium — page {page}/{total_pages} — "
                     f"{len(all_records)} total records"
                 )
 
                 time.sleep(1.5)
 
             except Exception as e:
-                status_text.text(f"⚠️ Selenium page {page} error: {e}")
+                status_text.text(f"Selenium page {page} error: {e}")
                 continue
 
     finally:
@@ -1119,15 +1153,9 @@ def scrape_port_selenium(port_name, port_id, max_pages, progress_bar, status_tex
 # ──────────────────────────────────────────────
 
 def scrape_port(port_name, port_id, max_pages, progress_bar, status_text) -> pd.DataFrame:
-    """
-    Hybrid scraper:
-    1. Static HTML
-    2. Hidden API discovery
-    3. Selenium fallback
-    """
     # 1. Static HTML
     try:
-        status_text.text(f"1️⃣ Trying static HTML — {port_name}")
+        status_text.text(f"1. Trying static HTML — {port_name}")
 
         df_static = scrape_port_static(
             port_name,
@@ -1139,16 +1167,16 @@ def scrape_port(port_name, port_id, max_pages, progress_bar, status_text) -> pd.
 
         if df_static is not None and not df_static.empty:
             status_text.text(
-                f"✅ {port_name}: {len(df_static)} records found with static HTML"
+                f"{port_name}: {len(df_static)} records found with static HTML"
             )
             return df_static
 
     except Exception as e:
-        status_text.text(f"⚠️ Static HTML failed — {e}")
+        status_text.text(f"Static HTML failed — {e}")
 
     # 2. Hidden API
     try:
-        status_text.text(f"2️⃣ Trying hidden API discovery — {port_name}")
+        status_text.text(f"2. Trying hidden API discovery — {port_name}")
 
         df_api = scrape_port_api(
             port_name,
@@ -1160,16 +1188,16 @@ def scrape_port(port_name, port_id, max_pages, progress_bar, status_text) -> pd.
 
         if df_api is not None and not df_api.empty:
             status_text.text(
-                f"✅ {port_name}: {len(df_api)} records found through hidden API"
+                f"{port_name}: {len(df_api)} records found through hidden API"
             )
             return df_api
 
     except Exception as e:
-        status_text.text(f"⚠️ Hidden API discovery failed — {e}")
+        status_text.text(f"Hidden API discovery failed — {e}")
 
     # 3. Selenium
     try:
-        status_text.text(f"3️⃣ Trying Selenium fallback — {port_name}")
+        status_text.text(f"3. Trying Selenium fallback — {port_name}")
 
         df_selenium = scrape_port_selenium(
             port_name,
@@ -1181,12 +1209,12 @@ def scrape_port(port_name, port_id, max_pages, progress_bar, status_text) -> pd.
 
         if df_selenium is not None and not df_selenium.empty:
             status_text.text(
-                f"✅ {port_name}: {len(df_selenium)} records found with Selenium"
+                f"{port_name}: {len(df_selenium)} records found with Selenium"
             )
             return df_selenium
 
     except Exception as e:
-        status_text.text(f"❌ Selenium fallback failed — {e}")
+        status_text.text(f"Selenium fallback failed — {e}")
 
     return pd.DataFrame()
 
@@ -1197,7 +1225,7 @@ def scrape_port(port_name, port_id, max_pages, progress_bar, status_text) -> pd.
 
 def main():
     st.set_page_config(
-        page_title="🐟 Prix du Poisson — ONP Maroc",
+        page_title="Fish Prices — ONP Morocco",
         page_icon="🐟",
         layout="wide",
     )
@@ -1274,25 +1302,25 @@ def main():
     )
 
     st.markdown(
-        '<div class="main-title">🐟 Prix du Poisson — Maroc</div>',
+        '<div class="main-title">🐟 Fish Prices — Morocco</div>',
         unsafe_allow_html=True,
     )
 
     st.markdown(
-        '<div class="subtitle">Office National des Pêches — Données des marchés de poisson</div>',
+        '<div class="subtitle">Office National des Pêches — Fish market data</div>',
         unsafe_allow_html=True,
     )
 
     with st.sidebar:
-        st.image("https://www.onp.ma/images/logo.png", width=200)
+        st.markdown("## 🐟 ONP Morocco")
         st.markdown("---")
-        st.markdown("## ⚙️ Paramètres")
+        st.markdown("## Settings")
 
-        st.markdown("### 🏭 Choix du port")
+        st.markdown("### Port selection")
 
         port_mode = st.radio(
-            "Mode de sélection :",
-            ["Un seul port", "Plusieurs ports", "Tous les ports"],
+            "Selection mode:",
+            ["Single port", "Multiple ports", "All ports"],
             index=0,
             label_visibility="collapsed",
         )
@@ -1300,36 +1328,36 @@ def main():
         selected_ports = {}
         port_list = {k: v for k, v in DELEGATIONS.items() if v != -1}
 
-        if port_mode == "Un seul port":
-            port_name = st.selectbox("Port :", list(port_list.keys()), index=0)
+        if port_mode == "Single port":
+            port_name = st.selectbox("Port:", list(port_list.keys()), index=0)
             selected_ports = {port_name: port_list[port_name]}
 
-        elif port_mode == "Plusieurs ports":
-            port_names = st.multiselect("Ports :", list(port_list.keys()), default=[])
+        elif port_mode == "Multiple ports":
+            port_names = st.multiselect("Ports:", list(port_list.keys()), default=[])
             selected_ports = {n: port_list[n] for n in port_names}
 
         else:
             selected_ports = port_list
 
         st.markdown("---")
-        st.markdown("### 📄 Nombre de pages")
+        st.markdown("### Number of pages")
 
         max_pages = st.slider(
-            "Pages max par port :",
+            "Max pages per port:",
             min_value=1,
-            max_value=200,
-            value=30,
-            help="Augmentez ce nombre si le filtre de date ne trouve rien.",
+            max_value=20,
+            value=3,
+            help="Start with 1 to 3 pages. Increase only if needed.",
         )
 
         st.markdown("---")
-        st.markdown("### 📅 Filtre par date")
+        st.markdown("### Date filter")
 
-        use_date = st.checkbox("Activer le filtre par date")
+        use_date = st.checkbox("Enable date filter")
 
         if use_date:
-            date_from = st.date_input("Du :", value=date.today() - timedelta(days=30))
-            date_to = st.date_input("Au :", value=date.today())
+            date_from = st.date_input("From:", value=date.today() - timedelta(days=30))
+            date_to = st.date_input("To:", value=date.today())
         else:
             date_from = None
             date_to = None
@@ -1337,13 +1365,13 @@ def main():
         st.markdown("---")
 
         go = st.button(
-            "🔍 LANCER LA RECHERCHE",
+            "Search",
             type="primary",
             use_container_width=True,
         )
 
         clear_cache = st.button(
-            "🧹 Réinitialiser les données",
+            "Reset data",
             use_container_width=True,
         )
 
@@ -1351,7 +1379,7 @@ def main():
 
         st.markdown(
             '<div style="text-align:center; color:#999; font-size:0.8rem;">'
-            "Données: onp.ma<br>Mode hybride: HTML → API → Selenium"
+            "Data source: onp.ma<br>Hybrid mode: HTML → API → Selenium"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1361,26 +1389,26 @@ def main():
 
     if clear_cache:
         st.session_state.data = None
-        st.success("Données réinitialisées.")
+        st.success("Data reset.")
 
     if go:
         if not selected_ports:
-            st.error("⚠️ Veuillez sélectionner au moins un port.")
+            st.error("Please select at least one port.")
             return
 
         all_data = []
         total_ports = len(selected_ports)
 
         st.markdown(
-            '<div class="section-header">🔄 Collecte en cours...</div>',
+            '<div class="section-header">Collection in progress...</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="warning-box">'
-            "L’application essaie 3 méthodes dans cet ordre : "
-            "<strong>HTML statique</strong>, puis <strong>API cachée/JSON</strong>, "
-            "puis <strong>Selenium</strong> si nécessaire."
+            "The app tries 3 methods in this order: "
+            "<strong>static HTML</strong>, then <strong>hidden API/JSON</strong>, "
+            "then <strong>Selenium</strong> if needed."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1388,7 +1416,7 @@ def main():
         overall = st.progress(0)
 
         for i, (name, pid) in enumerate(selected_ports.items()):
-            st.markdown(f"**🏭 {name}** ({i + 1}/{total_ports})")
+            st.markdown(f"**{name}** ({i + 1}/{total_ports})")
 
             prog = st.progress(0)
             status = st.empty()
@@ -1398,12 +1426,12 @@ def main():
 
                 if not df.empty:
                     all_data.append(df)
-                    status.text(f"✅ {name} : {len(df)} enregistrements")
+                    status.text(f"{name}: {len(df)} records")
                 else:
-                    status.text(f"⚠️ {name} : aucune donnée trouvée")
+                    status.text(f"{name}: no data found")
 
             except Exception as e:
-                status.text(f"❌ {name} : erreur — {e}")
+                status.text(f"{name}: error — {e}")
 
             overall.progress((i + 1) / total_ports)
 
@@ -1416,16 +1444,16 @@ def main():
             total = len(st.session_state.data)
 
             st.markdown(
-                f'<div class="success-box">✅ Terminé ! <strong>{total}</strong> '
-                f"enregistrements collectés de <strong>{total_ports}</strong> port(s).</div>",
+                f'<div class="success-box">Done. <strong>{total}</strong> '
+                f"records collected from <strong>{total_ports}</strong> port(s).</div>",
                 unsafe_allow_html=True,
             )
 
         else:
             st.session_state.data = None
             st.warning(
-                "Aucune donnée collectée. Si la méthode Selenium a échoué avec Chrome/Chromium, "
-                "vérifiez que `packages.txt` existe bien à la racine du dépôt et redémarrez l’application."
+                "No data collected. If Selenium failed with Chrome/Chromium, "
+                "check that packages.txt exists at the repository root and reboot the app."
             )
 
     df = st.session_state.data
@@ -1434,71 +1462,71 @@ def main():
         filtered = df.copy()
 
         if use_date and date_from and date_to:
-            filtered["Date de vente"] = pd.to_datetime(
-                filtered["Date de vente"],
+            filtered["Sale date"] = pd.to_datetime(
+                filtered["Sale date"],
                 errors="coerce",
             )
 
             filtered = filtered[
-                (filtered["Date de vente"] >= pd.Timestamp(date_from))
-                & (filtered["Date de vente"] <= pd.Timestamp(date_to))
+                (filtered["Sale date"] >= pd.Timestamp(date_from))
+                & (filtered["Sale date"] <= pd.Timestamp(date_to))
             ]
 
         with st.sidebar:
             st.markdown("---")
-            st.markdown("### 🎯 Filtres")
+            st.markdown("### Filters")
 
-            if "Espèce" in filtered.columns:
-                species_list = sorted(filtered["Espèce"].dropna().unique().tolist())
+            if "Species" in filtered.columns:
+                species_list = sorted(filtered["Species"].dropna().unique().tolist())
 
-                sel_species = st.multiselect(
-                    "🐟 Espèces :",
+                selected_species = st.multiselect(
+                    "Species:",
                     species_list,
                     default=[],
                 )
 
-                if sel_species:
-                    filtered = filtered[filtered["Espèce"].isin(sel_species)]
+                if selected_species:
+                    filtered = filtered[filtered["Species"].isin(selected_species)]
 
-            if "Prix (DH/KG)" in filtered.columns:
-                prices = filtered["Prix (DH/KG)"].dropna()
+            if "Price (DH/KG)" in filtered.columns:
+                prices = filtered["Price (DH/KG)"].dropna()
 
                 if not prices.empty and prices.min() < prices.max():
-                    p_range = st.slider(
-                        "💰 Prix (DH/KG) :",
+                    price_range = st.slider(
+                        "Price (DH/KG):",
                         float(prices.min()),
                         float(prices.max()),
                         (float(prices.min()), float(prices.max())),
                     )
 
                     filtered = filtered[
-                        (filtered["Prix (DH/KG)"] >= p_range[0])
-                        & (filtered["Prix (DH/KG)"] <= p_range[1])
+                        (filtered["Price (DH/KG)"] >= price_range[0])
+                        & (filtered["Price (DH/KG)"] <= price_range[1])
                     ]
 
         st.markdown(
-            '<div class="section-header">📊 Résumé</div>',
+            '<div class="section-header">Summary</div>',
             unsafe_allow_html=True,
         )
 
         if filtered.empty:
-            st.warning("Aucune donnée après application des filtres.")
+            st.warning("No data after applying filters.")
             return
 
         c1, c2, c3, c4, c5 = st.columns(5)
 
-        c1.metric("📋 Enregistrements", f"{len(filtered):,}")
-        c2.metric("🐟 Espèces", f"{filtered['Espèce'].nunique():,}")
-        c3.metric("🏭 Ports", f"{filtered['Port'].nunique():,}")
+        c1.metric("Records", f"{len(filtered):,}")
+        c2.metric("Species", f"{filtered['Species'].nunique():,}")
+        c3.metric("Ports", f"{filtered['Port'].nunique():,}")
 
-        avg_p = filtered["Prix (DH/KG)"].mean()
-        c4.metric("💰 Prix moyen", f"{avg_p:,.2f} DH" if pd.notna(avg_p) else "—")
+        avg_price = filtered["Price (DH/KG)"].mean()
+        c4.metric("Average price", f"{avg_price:,.2f} DH" if pd.notna(avg_price) else "—")
 
-        tot_w = filtered["Poids (KG)"].sum()
-        c5.metric("⚖️ Poids total", f"{tot_w:,.0f} KG" if pd.notna(tot_w) else "—")
+        total_weight = filtered["Weight (KG)"].sum()
+        c5.metric("Total weight", f"{total_weight:,.0f} KG" if pd.notna(total_weight) else "—")
 
         st.markdown(
-            '<div class="section-header">📋 Tableau des données</div>',
+            '<div class="section-header">Data table</div>',
             unsafe_allow_html=True,
         )
 
@@ -1510,16 +1538,16 @@ def main():
         )
 
         st.markdown(
-            '<div class="section-header">📈 Graphiques</div>',
+            '<div class="section-header">Charts</div>',
             unsafe_allow_html=True,
         )
 
         tab1, tab2, tab3, tab4 = st.tabs(
             [
-                "🐟 Espèces",
-                "📈 Tendances",
-                "🏭 Ports",
-                "📊 Distribution",
+                "Species",
+                "Trends",
+                "Ports",
+                "Distribution",
             ]
         )
 
@@ -1527,64 +1555,64 @@ def main():
             col_a, col_b = st.columns(2)
 
             with col_a:
-                sw = (
-                    filtered.groupby("Espèce")["Poids (KG)"]
+                species_weight = (
+                    filtered.groupby("Species")["Weight (KG)"]
                     .sum()
                     .sort_values(ascending=True)
                     .tail(15)
                     .reset_index()
                 )
 
-                if not sw.empty:
+                if not species_weight.empty:
                     fig = px.bar(
-                        sw,
-                        x="Poids (KG)",
-                        y="Espèce",
+                        species_weight,
+                        x="Weight (KG)",
+                        y="Species",
                         orientation="h",
-                        title="🐟 Top 15 — Poids (KG)",
-                        color="Poids (KG)",
+                        title="Top 15 species by weight",
+                        color="Weight (KG)",
                         color_continuous_scale="Blues",
                     )
 
                     st.plotly_chart(fig, use_container_width=True)
 
             with col_b:
-                sr = (
-                    filtered.groupby("Espèce")["Montant (DH)"]
+                species_amount = (
+                    filtered.groupby("Species")["Amount (DH)"]
                     .sum()
                     .sort_values(ascending=True)
                     .tail(15)
                     .reset_index()
                 )
 
-                if not sr.empty:
+                if not species_amount.empty:
                     fig = px.bar(
-                        sr,
-                        x="Montant (DH)",
-                        y="Espèce",
+                        species_amount,
+                        x="Amount (DH)",
+                        y="Species",
                         orientation="h",
-                        title="💰 Top 15 — Montant (DH)",
-                        color="Montant (DH)",
+                        title="Top 15 species by amount",
+                        color="Amount (DH)",
                         color_continuous_scale="Greens",
                     )
 
                     st.plotly_chart(fig, use_container_width=True)
 
-            sp = (
-                filtered.groupby("Espèce")["Prix (DH/KG)"]
+            species_price = (
+                filtered.groupby("Species")["Price (DH/KG)"]
                 .mean()
                 .sort_values(ascending=False)
                 .head(20)
                 .reset_index()
             )
 
-            if not sp.empty:
+            if not species_price.empty:
                 fig = px.bar(
-                    sp,
-                    x="Espèce",
-                    y="Prix (DH/KG)",
-                    title="💎 Espèces les plus chères — DH/KG moyen",
-                    color="Prix (DH/KG)",
+                    species_price,
+                    x="Species",
+                    y="Price (DH/KG)",
+                    title="Most expensive species — average DH/KG",
+                    color="Price (DH/KG)",
                     color_continuous_scale="Reds",
                 )
 
@@ -1593,107 +1621,107 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
-            dd = filtered.dropna(subset=["Date de vente", "Prix (DH/KG)"]).copy()
+            dated_data = filtered.dropna(subset=["Sale date", "Price (DH/KG)"]).copy()
 
-            if not dd.empty:
-                dd["Date de vente"] = pd.to_datetime(
-                    dd["Date de vente"],
+            if not dated_data.empty:
+                dated_data["Sale date"] = pd.to_datetime(
+                    dated_data["Sale date"],
                     errors="coerce",
                 )
 
-                dd = dd.dropna(subset=["Date de vente"])
+                dated_data = dated_data.dropna(subset=["Sale date"])
 
-                if not dd.empty:
+                if not dated_data.empty:
                     trend = (
-                        dd.groupby("Date de vente")["Prix (DH/KG)"]
+                        dated_data.groupby("Sale date")["Price (DH/KG)"]
                         .mean()
                         .reset_index()
-                        .sort_values("Date de vente")
+                        .sort_values("Sale date")
                     )
 
                     fig = px.line(
                         trend,
-                        x="Date de vente",
-                        y="Prix (DH/KG)",
-                        title="📈 Prix moyen dans le temps",
+                        x="Sale date",
+                        y="Price (DH/KG)",
+                        title="Average price over time",
                     )
 
                     fig.update_layout(hovermode="x unified")
 
                     st.plotly_chart(fig, use_container_width=True)
 
-                    top5 = dd["Espèce"].value_counts().head(5).index.tolist()
-                    t5 = dd[dd["Espèce"].isin(top5)]
+                    top5 = dated_data["Species"].value_counts().head(5).index.tolist()
+                    top5_data = dated_data[dated_data["Species"].isin(top5)]
 
-                    if not t5.empty:
-                        ts = (
-                            t5.groupby(["Date de vente", "Espèce"])["Prix (DH/KG)"]
+                    if not top5_data.empty:
+                        trend_top5 = (
+                            top5_data.groupby(["Sale date", "Species"])["Price (DH/KG)"]
                             .mean()
                             .reset_index()
                         )
 
                         fig = px.line(
-                            ts,
-                            x="Date de vente",
-                            y="Prix (DH/KG)",
-                            color="Espèce",
-                            title="📈 Tendances — Top 5 espèces",
+                            trend_top5,
+                            x="Sale date",
+                            y="Price (DH/KG)",
+                            color="Species",
+                            title="Trends — Top 5 species",
                         )
 
                         st.plotly_chart(fig, use_container_width=True)
 
             else:
-                st.info("Pas de données de date disponibles.")
+                st.info("No date data available.")
 
         with tab3:
             if filtered["Port"].nunique() > 1:
                 col_a, col_b = st.columns(2)
 
                 with col_a:
-                    pv = (
-                        filtered.groupby("Port")["Poids (KG)"]
+                    port_weight = (
+                        filtered.groupby("Port")["Weight (KG)"]
                         .sum()
                         .reset_index()
                     )
 
                     fig = px.pie(
-                        pv,
-                        values="Poids (KG)",
+                        port_weight,
+                        values="Weight (KG)",
                         names="Port",
-                        title="🏭 Volume par port",
+                        title="Volume by port",
                     )
 
                     st.plotly_chart(fig, use_container_width=True)
 
                 with col_b:
-                    pr = (
-                        filtered.groupby("Port")["Montant (DH)"]
+                    port_amount = (
+                        filtered.groupby("Port")["Amount (DH)"]
                         .sum()
                         .reset_index()
                     )
 
                     fig = px.pie(
-                        pr,
-                        values="Montant (DH)",
+                        port_amount,
+                        values="Amount (DH)",
                         names="Port",
-                        title="💰 Revenu par port",
+                        title="Revenue by port",
                     )
 
                     st.plotly_chart(fig, use_container_width=True)
 
-                pp = (
-                    filtered.groupby("Port")["Prix (DH/KG)"]
+                port_price = (
+                    filtered.groupby("Port")["Price (DH/KG)"]
                     .mean()
                     .sort_values(ascending=False)
                     .reset_index()
                 )
 
                 fig = px.bar(
-                    pp,
+                    port_price,
                     x="Port",
-                    y="Prix (DH/KG)",
-                    title="📊 Prix moyen par port",
-                    color="Prix (DH/KG)",
+                    y="Price (DH/KG)",
+                    title="Average price by port",
+                    color="Price (DH/KG)",
                     color_continuous_scale="Viridis",
                 )
 
@@ -1702,29 +1730,29 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
             else:
-                st.info("Sélectionnez plusieurs ports pour voir la comparaison.")
+                st.info("Select multiple ports to see comparisons.")
 
         with tab4:
-            pd_col = filtered["Prix (DH/KG)"].dropna()
+            price_col = filtered["Price (DH/KG)"].dropna()
 
-            if not pd_col.empty:
+            if not price_col.empty:
                 fig = px.histogram(
                     filtered,
-                    x="Prix (DH/KG)",
+                    x="Price (DH/KG)",
                     nbins=50,
-                    title="📊 Distribution des prix",
+                    title="Price distribution",
                     color_discrete_sequence=["#3498db"],
                 )
 
                 st.plotly_chart(fig, use_container_width=True)
 
-                box_col = "Port" if filtered["Port"].nunique() > 1 else "Espèce"
+                box_col = "Port" if filtered["Port"].nunique() > 1 else "Species"
 
                 fig = px.box(
                     filtered,
                     x=box_col,
-                    y="Prix (DH/KG)",
-                    title="📦 Box Plot des prix",
+                    y="Price (DH/KG)",
+                    title="Price box plot",
                     color=box_col,
                 )
 
@@ -1733,7 +1761,7 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
         st.markdown(
-            '<div class="section-header">📥 Télécharger les données</div>',
+            '<div class="section-header">Download data</div>',
             unsafe_allow_html=True,
         )
 
@@ -1750,26 +1778,26 @@ def main():
             )
 
             st.download_button(
-                "📄 Télécharger CSV",
+                "Download CSV",
                 csv_buf.getvalue(),
-                f"onp_prix_{date.today()}.csv",
+                f"onp_prices_{date.today()}.csv",
                 "text/csv",
                 use_container_width=True,
             )
 
         with c2:
-            xl_buf = io.BytesIO()
+            excel_buf = io.BytesIO()
 
             filtered.to_excel(
-                xl_buf,
+                excel_buf,
                 index=False,
                 engine="openpyxl",
             )
 
             st.download_button(
-                "📊 Télécharger Excel",
-                xl_buf.getvalue(),
-                f"onp_prix_{date.today()}.xlsx",
+                "Download Excel",
+                excel_buf.getvalue(),
+                f"onp_prices_{date.today()}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
@@ -1782,9 +1810,9 @@ def main():
             )
 
             st.download_button(
-                "📋 Télécharger JSON",
+                "Download JSON",
                 json_str,
-                f"onp_prix_{date.today()}.json",
+                f"onp_prices_{date.today()}.json",
                 "application/json",
                 use_container_width=True,
             )
@@ -1794,8 +1822,8 @@ def main():
 
         st.markdown(
             '<div class="info-box">'
-            "👈 <strong>Configurez vos paramètres dans le menu à gauche</strong> "
-            "puis cliquez sur <strong>LANCER LA RECHERCHE</strong> pour commencer."
+            "Configure your settings in the sidebar, then click "
+            "<strong>Search</strong> to start."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1803,22 +1831,22 @@ def main():
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            st.markdown("### 1️⃣ Choisir")
-            st.markdown("Sélectionnez un ou plusieurs ports de pêche marocains.")
+            st.markdown("### 1. Choose")
+            st.markdown("Select one or more Moroccan fishing ports.")
 
         with c2:
-            st.markdown("### 2️⃣ Collecter")
-            st.markdown("L’application essaie HTML statique, API cachée, puis Selenium.")
+            st.markdown("### 2. Collect")
+            st.markdown("The app tries static HTML, hidden API, then Selenium.")
 
         with c3:
-            st.markdown("### 3️⃣ Analyser")
-            st.markdown("Visualisez les graphiques et téléchargez en Excel/CSV.")
+            st.markdown("### 3. Analyze")
+            st.markdown("View charts and download the data as Excel/CSV.")
 
     st.markdown("---")
 
     st.markdown(
         '<div style="text-align:center; color:#aaa; font-size:0.85rem;">'
-        '🐟 Données: <a href="https://www.onp.ma">Office National des Pêches</a> — Maroc'
+        'Data source: <a href="https://www.onp.ma">Office National des Pêches</a> — Morocco'
         "</div>",
         unsafe_allow_html=True,
     )
