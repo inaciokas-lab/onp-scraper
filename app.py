@@ -80,15 +80,75 @@ USER_AGENT = (
 # ──────────────────────────────────────────────
 
 def make_driver():
+    """
+    Creates a Selenium Chrome/Chromium driver compatible with Streamlit Cloud
+    and other live Linux deployments.
+    """
+    import os
+    import shutil
+
     options = Options()
-    options.add_argument("--headless=new")
+
+    # More compatible than --headless=new on some cloud Linux images
+    options.add_argument("--headless")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-setuid-sandbox")
+    options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--window-size=1920,1080")
     options.add_argument(f"--user-agent={USER_AGENT}")
 
-    service = Service(ChromeDriverManager().install())
+    # Find Chromium/Chrome binary on live deployment
+    chrome_binary_candidates = [
+        os.environ.get("CHROME_BIN"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("google-chrome"),
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+    ]
+
+    chrome_binary = None
+
+    for candidate in chrome_binary_candidates:
+        if candidate and os.path.exists(candidate):
+            chrome_binary = candidate
+            break
+
+    if not chrome_binary:
+        raise RuntimeError(
+            "Chrome/Chromium binary not found. "
+            "For Streamlit Cloud, add a file named packages.txt containing: "
+            "chromium and chromium-driver."
+        )
+
+    options.binary_location = chrome_binary
+
+    # Find ChromeDriver on live deployment
+    chromedriver_candidates = [
+        os.environ.get("CHROMEDRIVER_PATH"),
+        shutil.which("chromedriver"),
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium/chromedriver",
+        "/usr/lib/chromium-browser/chromedriver",
+    ]
+
+    chromedriver_path = None
+
+    for candidate in chromedriver_candidates:
+        if candidate and os.path.exists(candidate):
+            chromedriver_path = candidate
+            break
+
+    if chromedriver_path:
+        service = Service(chromedriver_path)
+    else:
+        # Fallback for environments where webdriver-manager can download driver
+        service = Service(ChromeDriverManager().install())
+
     return webdriver.Chrome(service=service, options=options)
 
 
