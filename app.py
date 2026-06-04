@@ -1,46 +1,3 @@
-Below are the complete files you can copy directly into your GitHub repository.
-
-Your repository should look like this:
-
-```txt
-your-repo/
-├── app.py
-├── requirements.txt
-├── packages.txt
-└── README.md
-```
-
----
-
-## 1. `requirements.txt`
-
-```txt
-requests==2.32.3
-beautifulsoup4==4.12.3
-streamlit==1.36.0
-plotly==5.22.0
-pandas==2.2.2
-openpyxl==3.1.5
-selenium==4.23.1
-webdriver-manager==4.0.2
-```
-
----
-
-## 2. `packages.txt`
-
-```txt
-chromium
-chromium-driver
-```
-
----
-
-## 3. `app.py`
-
-Replace your full `app.py` with this:
-
-```python
 #!/usr/bin/env python3
 """
 🐟 ONP Fish Market Dashboard
@@ -1869,6 +1826,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-After pushing these files to GitHub, in Streamlit Cloud use **Clear cache and reboot** so `packages.txt` gets installed.
